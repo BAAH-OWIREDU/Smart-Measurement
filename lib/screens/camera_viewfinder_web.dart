@@ -92,7 +92,10 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
       }
 
       final mediaStream = await mediaDevices.getUserMedia({
-        'video': true,
+        'video': {
+          'facingMode' : {'ideal':'environment'}
+
+        },
         'audio': false,
       });
 
