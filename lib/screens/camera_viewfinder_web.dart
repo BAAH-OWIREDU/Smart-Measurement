@@ -300,6 +300,22 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
                       ),
                     ),
                   ),
+                  
+const SizedBox(height: 12),
+ElevatedButton.icon(
+  onPressed: () {
+    setState(() {
+      _isAligned = true; // Instantly forces alignment to true for live demo
+    });
+  },
+  icon: const Icon(Icons.bolt, color: Colors.amber, size: 18),
+  label: const Text('Bypass Alignment (Live Demo)'),
+  style: ElevatedButton.styleFrom(
+    backgroundColor: Colors.deepOrange,
+    foregroundColor: Colors.white,
+    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+  ),
+),
                 ],
               ),
             ),
