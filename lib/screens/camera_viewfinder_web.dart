@@ -93,9 +93,10 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
     });
   }
 
-  // Live preview calculation using the user's calibration height
+  // Live preview calculation using strict landmark verification
   void _updateLiveMetricsPreview(List<dynamic> landmarks) {
     try {
+      if (landmarks.length <= 28) return;
       final nose = landmarks[0];
       final leftShoulder = landmarks[11];
       final rightShoulder = landmarks[12];
@@ -186,42 +187,85 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
     html.window.requestAnimationFrame((_) => loop());
   }
 
-  // --- FAST SNAP & CALIBRATION SCAN METHOD ---
+  // --- STRICT SNAP & COMPUTE METHOD (NO FAKE HARDCODING) ---
   void _triggerMeasurementScan() async {
     setState(() {
       _isMeasuring = true;
       _copiedToClipboard = false;
     });
 
-    // Quick visual snap delay (300ms laser animation)
     await Future.delayed(const Duration(milliseconds: 300));
 
     double knownHeight = double.tryParse(_heightController.text) ?? 68.0;
     
-    Map<String, dynamic> results;
-    
-    // Snap the current frame's landmarks and compute measurements using user's height baseline
-    if (_latestLandmarks != null && _latestLandmarks is List && _latestLandmarks!.isNotEmpty) {
-      results = MeasurementService.computeMeasurements(
-        _latestLandmarks!,
-        knownHeightInches: knownHeight,
-      );
-    } else {
-      // Emergency fallback if landmarks are missing during quick demo snap
-      results = {
-        'shoulderWidth': 17.5,
-        'torsoLength': 24.0,
-        'estimatedHeight': knownHeight,
-        'recommendedSize': 'M',
-        'fitDescription': 'Tailored professional fit',
-      };
+    // STRICT CHECK: Verify that MediaPipe is actively tracking a human skeleton
+    if (_latestLandmarks != null && _latestLandmarks is List && _latestLandmarks!.length > 28) {
+      final landmarks = _latestLandmarks!;
+      
+      final nose = landmarks[0];
+      final leftShoulder = landmarks[11];
+      final rightShoulder = landmarks[12];
+      final leftAnkle = landmarks[27];
+      final rightAnkle = landmarks[28];
+
+      if (leftShoulder != null && rightShoulder != null && nose != null && (leftAnkle != null || rightAnkle != null)) {
+        
+        // 1. Calculate actual pixel dimensions from the camera frame
+        double shoulderPx = sqrt(
+          pow(((rightShoulder['x'] ?? 0) - (leftShoulder['x'] ?? 0)), 2) + 
+          pow(((rightShoulder['y'] ?? 0) - (leftShoulder['y'] ?? 0)), 2)
+        );
+
+        double ankleY = leftAnkle != null ? (leftAnkle['y'] ?? 0) : (rightAnkle['y'] ?? 0);
+        double heightPx = (ankleY - (nose['y'] ?? 0)).abs();
+
+        if (heightPx > 0) {
+          // 2. Scale pixel measurements using user's height input as the baseline ratio
+          double scaleRatio = knownHeight / heightPx;
+          double calculatedShoulder = shoulderPx * scaleRatio * 1.15;
+          double calculatedTorso = heightPx * scaleRatio * 0.38;
+
+          // 3. Dynamically assign clothing size based on actual measured shoulder width
+          String size = 'M';
+          String desc = 'Standard tailored fit';
+          if (calculatedShoulder > 19.0) {
+            size = 'XL';
+            desc = 'Extended frame tailored fit';
+          } else if (calculatedShoulder > 17.5) {
+            size = 'L';
+            desc = 'Large athletic fit';
+          } else if (calculatedShoulder < 15.0) {
+            size = 'S';
+            desc = 'Slim fitted profile';
+          }
+
+          if (mounted) {
+            setState(() {
+              _capturedMeasurements = {
+                'shoulderWidth': calculatedShoulder,
+                'torsoLength': calculatedTorso,
+                'estimatedHeight': knownHeight,
+                'recommendedSize': size,
+                'fitDescription': desc,
+              };
+              _isMeasuring = false;
+            });
+            return;
+          }
+        }
+      }
     }
 
+    // FAILURE CASE: If no human is detected, STOP and warn the user instead of faking data
     if (mounted) {
-      setState(() {
-        _capturedMeasurements = results;
-        _isMeasuring = false;
-      });
+      setState(() => _isMeasuring = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("No human skeleton detected. Please ensure you are standing in view of the camera!"),
+          backgroundColor: Colors.redAccent,
+          duration: Duration(seconds: 3),
+        ),
+      );
     }
   }
 
@@ -361,7 +405,7 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
                         ),
                       ),
                       const SizedBox(height: 12),
-                      // Instant Snap Button (removes alignment roadblocks for fast demo capture)
+                      // Instant Snap Button
                       SizedBox(
                         width: double.infinity,
                         height: 56,
@@ -690,7 +734,7 @@ class MonochromePoseHUDPainter extends CustomPainter {
     canvas.drawLine(targetRect.topRight, targetRect.topRight - const Offset(cornerLength, 0), hudPaint);
     canvas.drawLine(targetRect.topRight, targetRect.topRight + const Offset(0, cornerLength), hudPaint);
     canvas.drawLine(targetRect.bottomLeft, targetRect.bottomLeft + const Offset(cornerLength, 0), hudPaint);
-    canvas.drawLine(targetRect.bottomLeft, targetRect.bottomLeft - const Offset(0, cornerLength), hudPaint);
+    canvas.drawLine(targetRect.bottomLeft, targetRect.bottomLeft + const Offset(0, cornerLength), hudPaint);
     canvas.drawLine(targetRect.bottomRight, targetRect.bottomRight - const Offset(cornerLength, 0), hudPaint);
     canvas.drawLine(targetRect.bottomRight, targetRect.bottomRight - const Offset(0, cornerLength), hudPaint);
 
