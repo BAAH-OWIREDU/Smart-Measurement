@@ -24,18 +24,18 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
   List<dynamic>? _latestLandmarks;
   bool _isProcessingFrames = false;
 
-  bool _isAligned = false;
+  bool _isAligned = false; // Controls Red/Green HUD box state
   Map<String, dynamic>? _capturedMeasurements;
   bool _isMeasuring = false;
   bool _copiedToClipboard = false;
   bool _useMetricUnit = false;
 
-  // --- GUIDED WIZARD & LIVE METRICS STATE ---
-  int _scanStep = 1; // 1: Front View, 2: Side View
+  // --- AUTO-GUIDANCE & 2-STEP WIZARD STATE ---
+  int _scanStep = 1; // 1: Front View, 2: Side Profile View
   Map<String, dynamic> _frontScanData = {};
-  String _heightDisplay = "Waiting for stream...";
-  String _shoulderDisplay = "Waiting for stream...";
-  String _chestDisplay = "Waiting for stream...";
+  String _guidanceInstruction = "Position yourself in camera view";
+  String _heightDisplay = "Waiting...";
+  String _shoulderDisplay = "Waiting...";
 
   int _frameCount = 0;
   int _fps = 0;
@@ -73,13 +73,15 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
         _frameCount++;
         setState(() {
           _latestLandmarks = landmarks;
-          _isAligned = landmarks != null
-              ? MeasurementService.checkAlignment(landmarks)
-              : false;
         });
 
-        if (landmarks != null && landmarks is List && landmarks.isNotEmpty) {
-          _updateLiveMetricsPreview(landmarks);
+        if (landmarks != null && landmarks is List && landmarks.length > 12) {
+          _evaluateAutoGuidance(landmarks);
+        } else {
+          setState(() {
+            _isAligned = false;
+            _guidanceInstruction = "No human detected. Step into frame.";
+          });
         }
       }
     });
@@ -94,40 +96,148 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
     });
   }
 
-  void _updateLiveMetricsPreview(List<dynamic> landmarks) {
+  // --- REAL-TIME LIVENESS & POSITION EVALUATION ---
+  void _evaluateAutoGuidance(List<dynamic> landmarks) {
     try {
-      if (landmarks.length <= 12) return;
       final nose = landmarks[0];
       final leftShoulder = landmarks[11];
       final rightShoulder = landmarks[12];
 
-      if (leftShoulder != null && rightShoulder != null && nose != null) {
-        double shoulderPixelWidth = sqrt(
-          pow(((rightShoulder['x'] ?? 0) - (leftShoulder['x'] ?? 0)), 2) + 
-          pow(((rightShoulder['y'] ?? 0) - (leftShoulder['y'] ?? 0)), 2)
-        );
+      if (nose == null || leftShoulder == null || rightShoulder == null) return;
 
-        double estimatedHeightPx = shoulderPixelWidth * 3.45;
+      double noseX = (nose['x'] ?? 0.5);
+      double shoulderWidth = sqrt(
+        pow(((rightShoulder['x'] ?? 0) - (leftShoulder['x'] ?? 0)), 2) + 
+        pow(((rightShoulder['y'] ?? 0) - (leftShoulder['y'] ?? 0)), 2)
+      );
+
+      // 1. Horizontal Centering Check
+      if (noseX < 0.35) {
+        setState(() {
+          _isAligned = false;
+          _guidanceInstruction = "STEP SLIGHTLY RIGHT ➔";
+        });
+        return;
+      }
+      if (noseX > 0.65) {
+        setState(() {
+          _isAligned = false;
+          _guidanceInstruction = "⬅ STEP SLIGHTLY LEFT";
+        });
+        return;
+      }
+
+      // 2. Distance/Framing Check
+      if (shoulderWidth < 0.15) {
+        setState(() {
+          _isAligned = false;
+          _guidanceInstruction = "STEP CLOSER TO CAMERA ⬆";
+        });
+        return;
+      }
+      if (shoulderWidth > 0.60) {
+        setState(() {
+          _isAligned = false;
+          _guidanceInstruction = "STEP BACK SLIGHTLY ⬇";
+        });
+        return;
+      }
+
+      // 3. PERFECT POSITION REACHED (Box turns Green)
+      if (!_isAligned && !_isMeasuring) {
+        setState(() {
+          _isAligned = true;
+          _guidanceInstruction = _scanStep == 1 
+              ? "PERFECT! HOLD FOR FRONT SCAN" 
+              : "PERFECT! HOLD FOR PROFILE SCAN";
+        });
+
+        // Update live metrics preview while aligned
         double knownHeight = double.tryParse(_heightController.text) ?? 68.0;
-        
+        double estimatedHeightPx = shoulderWidth * 3.45; 
         if (estimatedHeightPx > 0) {
           double ratio = knownHeight / estimatedHeightPx;
-          double liveShoulder = shoulderPixelWidth * ratio * 1.15;
-          double liveChest = liveShoulder * 2.1;
-
+          double liveShoulder = shoulderWidth * ratio * 1.15 * 10;
           final unitLabel = _useMetricUnit ? 'cm' : 'in';
-          double hVal = _useMetricUnit ? knownHeight * 2.54 : knownHeight;
-          double sVal = _useMetricUnit ? liveShoulder * 2.54 : liveShoulder;
-          double cVal = _useMetricUnit ? liveChest * 2.54 : liveChest;
-
+          
           setState(() {
-            _heightDisplay = "${hVal.toStringAsFixed(1)} $unitLabel";
-            _shoulderDisplay = "${sVal.toStringAsFixed(1)} $unitLabel";
-            _chestDisplay = "${cVal.toStringAsFixed(1)} $unitLabel";
+            _heightDisplay = "${_useMetricUnit ? (knownHeight * 2.54).toStringAsFixed(1) : knownHeight} $unitLabel";
+            _shoulderDisplay = "${_useMetricUnit ? (liveShoulder * 2.54).toStringAsFixed(1) : liveShoulder.toStringAsFixed(1)} $unitLabel";
           });
         }
+
+        // Automatically trigger snapshot capture after 1 second of holding position
+        Future.delayed(const Duration(seconds: 1), () {
+          if (mounted && _isAligned && !_isMeasuring && _capturedMeasurements == null) {
+            _triggerAutomatedCapture(landmarks);
+          }
+        });
       }
     } catch (_) {}
+  }
+
+  // --- AUTOMATED CAPTURE LOGIC ---
+  void _triggerAutomatedCapture(List<dynamic> landmarks) async {
+    setState(() => _isMeasuring = true);
+
+    await Future.delayed(const Duration(milliseconds: 300));
+    double knownHeight = double.tryParse(_heightController.text) ?? 68.0;
+
+    final leftShoulder = landmarks[11];
+    final rightShoulder = landmarks[12];
+
+    double shoulderPx = sqrt(
+      pow(((rightShoulder['x'] ?? 0) - (leftShoulder['x'] ?? 0)), 2) + 
+      pow(((rightShoulder['y'] ?? 0) - (leftShoulder['y'] ?? 0)), 2)
+    );
+
+    double estimatedHeightPx = shoulderPx * 3.45;
+    double scaleRatio = knownHeight / estimatedHeightPx;
+    double calculatedShoulder = shoulderPx * scaleRatio * 1.15;
+
+    if (_scanStep == 1) {
+      // Save Step 1 (Front View) and advance to Step 2 (Profile View)
+      _frontScanData = {
+        'shoulderWidth': calculatedShoulder,
+        'torsoLength': estimatedHeightPx * scaleRatio * 0.38,
+      };
+
+      setState(() {
+        _scanStep = 2;
+        _isMeasuring = false;
+        _isAligned = false;
+        _guidanceInstruction = "STEP 2: TURN SIDEWAYS (PROFILE)";
+      });
+    } else {
+      // Step 2 Complete: Finalize Report
+      double finalShoulder = (_frontScanData['shoulderWidth'] + calculatedShoulder) / 2;
+      double finalTorso = _frontScanData['torsoLength'];
+
+      String size = 'M';
+      String desc = 'Standard tailored fit';
+      if (finalShoulder > 19.0) {
+        size = 'XL';
+        desc = 'Extended frame tailored fit';
+      } else if (finalShoulder > 17.5) {
+        size = 'L';
+        desc = 'Large athletic fit';
+      } else if (finalShoulder < 15.0) {
+        size = 'S';
+        desc = 'Slim fitted profile';
+      }
+
+      setState(() {
+        _capturedMeasurements = {
+          'shoulderWidth': finalShoulder,
+          'torsoLength': finalTorso,
+          'estimatedHeight': knownHeight,
+          'recommendedSize': size,
+          'fitDescription': desc,
+        };
+        _isMeasuring = false;
+        _scanStep = 1;
+      });
+    }
   }
 
   Future<void> _startCameraStream() async {
@@ -135,14 +245,10 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
 
     try {
       final mediaDevices = html.window.navigator.mediaDevices;
-      if (mediaDevices == null) {
-        throw 'Camera API not supported in this browser context.';
-      }
+      if (mediaDevices == null) throw 'Camera API not supported.';
 
       final mediaStream = await mediaDevices.getUserMedia({
-        'video': {
-          'facingMode': {'ideal': 'environment'}
-        },
+        'video': {'facingMode': {'ideal': 'environment'}},
         'audio': false,
       });
 
@@ -172,91 +278,6 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
     }
 
     html.window.requestAnimationFrame((_) => loop());
-  }
-
-  // --- GUIDED 2-STEP CAPTURE WIZARD LOGIC ---
-  void _triggerMeasurementScan() async {
-    setState(() {
-      _isMeasuring = true;
-      _copiedToClipboard = false;
-    });
-
-    await Future.delayed(const Duration(milliseconds: 300));
-    double knownHeight = double.tryParse(_heightController.text) ?? 68.0;
-
-    if (_latestLandmarks != null && _latestLandmarks is List && _latestLandmarks!.isNotEmpty) {
-      final landmarks = _latestLandmarks!;
-      final nose = landmarks.isNotEmpty ? landmarks[0] : null;
-      final leftShoulder = landmarks.length > 11 ? landmarks[11] : null;
-      final rightShoulder = landmarks.length > 12 ? landmarks[12] : null;
-
-      if (leftShoulder != null && rightShoulder != null && nose != null) {
-        double shoulderPx = sqrt(
-          pow(((rightShoulder['x'] ?? 0) - (leftShoulder['x'] ?? 0)), 2) + 
-          pow(((rightShoulder['y'] ?? 0) - (leftShoulder['y'] ?? 0)), 2)
-        );
-
-        double estimatedHeightPx = shoulderPx * 3.45;
-        double scaleRatio = knownHeight / estimatedHeightPx;
-        double calculatedShoulder = shoulderPx * scaleRatio * 1.15;
-
-        if (_scanStep == 1) {
-          // Store Step 1 (Front View) and advance wizard to Step 2
-          _frontScanData = {
-            'shoulderWidth': calculatedShoulder,
-            'torsoLength': estimatedHeightPx * scaleRatio * 0.38,
-          };
-
-          setState(() {
-            _scanStep = 2;
-            _isMeasuring = false;
-          });
-          return;
-        } else {
-          // Step 2 Complete: Combine data points for a professional report
-          double finalShoulder = (_frontScanData['shoulderWidth'] + calculatedShoulder) / 2;
-          double finalTorso = _frontScanData['torsoLength'];
-
-          String size = 'M';
-          String desc = 'Standard tailored fit';
-          if (finalShoulder > 19.0) {
-            size = 'XL';
-            desc = 'Extended frame tailored fit';
-          } else if (finalShoulder > 17.5) {
-            size = 'L';
-            desc = 'Large athletic fit';
-          } else if (finalShoulder < 15.0) {
-            size = 'S';
-            desc = 'Slim fitted profile';
-          }
-
-          if (mounted) {
-            setState(() {
-              _capturedMeasurements = {
-                'shoulderWidth': finalShoulder,
-                'torsoLength': finalTorso,
-                'estimatedHeight': knownHeight,
-                'recommendedSize': size,
-                'fitDescription': desc,
-              };
-              _isMeasuring = false;
-              _scanStep = 1; // Reset wizard for next scan
-            });
-            return;
-          }
-        }
-      }
-    }
-
-    if (mounted) {
-      setState(() => _isMeasuring = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text("Upper body not detected clearly. Please adjust position!"),
-          backgroundColor: Colors.redAccent,
-        ),
-      );
-    }
   }
 
   void _copyMeasurementsToClipboard() {
@@ -369,25 +390,30 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
                   Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      // Guided Instruction Banner
+                      // Dynamic Red-to-Green Instruction Banner
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
                         decoration: BoxDecoration(
                           color: const Color(0xFF121212).withOpacity(0.95),
                           borderRadius: BorderRadius.circular(20),
-                          border: Border.all(color: Colors.white24, width: 1),
+                          border: Border.all(
+                            color: _isAligned ? Colors.greenAccent : Colors.redAccent,
+                            width: 1.5,
+                          ),
                         ),
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            const Icon(Icons.supervised_user_circle, color: Colors.white, size: 18),
+                            Icon(
+                              _isAligned ? Icons.check_circle : Icons.warning_amber_rounded,
+                              color: _isAligned ? Colors.greenAccent : Colors.redAccent,
+                              size: 18,
+                            ),
                             const SizedBox(width: 10),
                             Text(
-                              _scanStep == 1
-                                  ? 'STEP 1: FACE FRONT & CAPTURE'
-                                  : 'STEP 2: TURN SIDEWAYS & CAPTURE',
-                              style: const TextStyle(
-                                color: Colors.white,
+                              _guidanceInstruction,
+                              style: TextStyle(
+                                color: _isAligned ? Colors.greenAccent : Colors.white,
                                 fontSize: 13,
                                 fontWeight: FontWeight.w800,
                                 letterSpacing: 1.2,
@@ -397,7 +423,7 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
                         ),
                       ),
                       const SizedBox(height: 10),
-                      // Live Calibration Preview Box
+                      // Live Calibration Preview
                       Container(
                         padding: const EdgeInsets.all(12.0),
                         decoration: BoxDecoration(
@@ -416,38 +442,6 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
                             Text("Estimated Height: $_heightDisplay", style: const TextStyle(color: Colors.white70, fontSize: 11)),
                             Text("Shoulder Width: $_shoulderDisplay", style: const TextStyle(color: Colors.white70, fontSize: 11)),
                           ],
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      // Action Button
-                      SizedBox(
-                        width: double.infinity,
-                        height: 56,
-                        child: ElevatedButton(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.white,
-                            foregroundColor: Colors.black,
-                            elevation: 0,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
-                          ),
-                          onPressed: _isMeasuring ? null : _triggerMeasurementScan,
-                          child: _isMeasuring
-                              ? const SizedBox(
-                                  width: 22,
-                                  height: 22,
-                                  child: CircularProgressIndicator(color: Colors.black, strokeWidth: 2.5),
-                                )
-                              : Row(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    const Icon(Icons.camera_alt, size: 18),
-                                    const SizedBox(width: 10),
-                                    Text(
-                                      _scanStep == 1 ? 'CAPTURE FRONT VIEW' : 'FINISH & GENERATE REPORT',
-                                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w900, letterSpacing: 1.2),
-                                    ),
-                                  ],
-                                ),
                         ),
                       ),
                     ],
@@ -717,9 +711,10 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
   }
 }
 
+// --- DYNAMIC RED-TO-GREEN ALIGNMENT HUD PAINTER ---
 class MonochromePoseHUDPainter extends CustomPainter {
   final List<dynamic>? landmarks;
-  final bool isAligned;
+  final bool isAligned; // true = Green, false = Red
   final double scanProgress;
   final bool isMeasuring;
 
@@ -733,16 +728,19 @@ class MonochromePoseHUDPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final center = Offset(size.width / 2, size.height / 2);
-    final boxWidth = size.width * 0.65;
-    final boxHeight = size.height * 0.75;
-    final targetRect = Rect.fromCenter(center: center, width: boxWidth, height: boxHeight);
+    final boxWidth = size.width * 0.70;
+    final boxHeight = size.height * 0.65;
+    final targetRect = Rect.fromCenter(center: center.translate(0, -20), width: boxWidth, height: boxHeight);
+
+    // Dynamic color switching: Red when adjusting, Green when locked!
+    final boxColor = isAligned ? Colors.greenAccent : Colors.redAccent;
 
     final hudPaint = Paint()
-      ..color = Colors.white70
+      ..color = boxColor
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.0;
+      ..strokeWidth = isAligned ? 3.0 : 2.0;
 
-    const cornerLength = 25.0;
+    const cornerLength = 30.0;
     canvas.drawLine(targetRect.topLeft, targetRect.topLeft + const Offset(cornerLength, 0), hudPaint);
     canvas.drawLine(targetRect.topLeft, targetRect.topLeft + const Offset(0, cornerLength), hudPaint);
     canvas.drawLine(targetRect.topRight, targetRect.topRight - const Offset(cornerLength, 0), hudPaint);
@@ -754,17 +752,17 @@ class MonochromePoseHUDPainter extends CustomPainter {
 
     final scanY = targetRect.top + (targetRect.height * scanProgress);
     final scanLaserPaint = Paint()
-      ..color = Colors.white
-      ..strokeWidth = isMeasuring ? 3.0 : 1.5;
+      ..color = isAligned ? Colors.greenAccent : Colors.white70
+      ..strokeWidth = isMeasuring ? 3.0 : 2.0;
 
-    canvas.drawLine(Offset(targetRect.left, scanY), Offset(targetRect.right, scanY), scanLaserPaint);
+    canvas.drawLine(Offset(targetRect.left + 20, scanY), Offset(targetRect.right - 20, scanY), scanLaserPaint);
 
     if (landmarks != null) {
-      final linePaint = Paint()..color = Colors.white54..strokeWidth = 1.5;
-      final nodePaint = Paint()..color = Colors.white..style = PaintingStyle.fill;
+      final linePaint = Paint()..color = boxColor.withOpacity(0.8)..strokeWidth = 2.0;
+      final nodePaint = Paint()..color = boxColor..style = PaintingStyle.fill;
 
       final connections = [
-        [11, 12], [11, 23], [12, 24], [23, 24],
+        [11, 12], [11, 23], [12, 24],
         [11, 13], [13, 15], [12, 14], [14, 16],
       ];
 
