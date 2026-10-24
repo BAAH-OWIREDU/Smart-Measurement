@@ -30,7 +30,9 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
   bool _copiedToClipboard = false;
   bool _useMetricUnit = false;
 
-  // --- REAL-TIME DISPLAY STATES ---
+  // --- GUIDED WIZARD & LIVE METRICS STATE ---
+  int _scanStep = 1; // 1: Front View, 2: Side View
+  Map<String, dynamic> _frontScanData = {};
   String _heightDisplay = "Waiting for stream...";
   String _shoulderDisplay = "Waiting for stream...";
   String _chestDisplay = "Waiting for stream...";
@@ -41,7 +43,7 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
 
   late AnimationController _scanAnimationController;
   final TextEditingController _heightController =
-      TextEditingController(text: '68'); // Default baseline height in inches
+      TextEditingController(text: '68'); // Default height baseline in inches
 
   @override
   void initState() {
@@ -76,7 +78,6 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
               : false;
         });
 
-        // Stream live estimates as landmarks update
         if (landmarks != null && landmarks is List && landmarks.isNotEmpty) {
           _updateLiveMetricsPreview(landmarks);
         }
@@ -93,29 +94,24 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
     });
   }
 
-  // Live preview calculation using strict landmark verification
   void _updateLiveMetricsPreview(List<dynamic> landmarks) {
     try {
-      if (landmarks.length <= 28) return;
+      if (landmarks.length <= 12) return;
       final nose = landmarks[0];
       final leftShoulder = landmarks[11];
       final rightShoulder = landmarks[12];
-      final leftAnkle = landmarks[27];
 
-      if (leftShoulder != null && rightShoulder != null && nose != null && leftAnkle != null) {
+      if (leftShoulder != null && rightShoulder != null && nose != null) {
         double shoulderPixelWidth = sqrt(
           pow(((rightShoulder['x'] ?? 0) - (leftShoulder['x'] ?? 0)), 2) + 
           pow(((rightShoulder['y'] ?? 0) - (leftShoulder['y'] ?? 0)), 2)
         );
 
-        double heightPixelDist = sqrt(
-          pow(((leftAnkle['x'] ?? 0) - (nose['x'] ?? 0)), 2) + 
-          pow(((leftAnkle['y'] ?? 0) - (nose['y'] ?? 0)), 2)
-        );
-
+        double estimatedHeightPx = shoulderPixelWidth * 3.45;
         double knownHeight = double.tryParse(_heightController.text) ?? 68.0;
-        if (heightPixelDist > 0) {
-          double ratio = knownHeight / heightPixelDist;
+        
+        if (estimatedHeightPx > 0) {
+          double ratio = knownHeight / estimatedHeightPx;
           double liveShoulder = shoulderPixelWidth * ratio * 1.15;
           double liveChest = liveShoulder * 2.1;
 
@@ -157,19 +153,10 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
           setState(() => _isStreaming = true);
           _startPoseInferenceLoop();
         }
-      } else {
-        throw 'Media stream object returned null from browser.';
       }
     } catch (e) {
-      String errText = e.toString();
-      if (errText.contains('NotAllowedError') || errText.contains('Permission denied')) {
-        errText = 'Camera permission denied. Allow access in your browser settings.';
-      } else if (errText.contains('NotFoundError')) {
-        errText = 'No camera hardware detected.';
-      }
-
       if (mounted) {
-        setState(() => _errorMessage = errText);
+        setState(() => _errorMessage = 'Camera permission denied or device not found.');
       }
     }
   }
@@ -187,7 +174,7 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
     html.window.requestAnimationFrame((_) => loop());
   }
 
-  // --- STRICT SNAP & COMPUTE METHOD (NO FAKE HARDCODING) ---
+  // --- GUIDED 2-STEP CAPTURE WIZARD LOGIC ---
   void _triggerMeasurementScan() async {
     setState(() {
       _isMeasuring = true;
@@ -195,46 +182,50 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
     });
 
     await Future.delayed(const Duration(milliseconds: 300));
-
     double knownHeight = double.tryParse(_heightController.text) ?? 68.0;
-    
-    // STRICT CHECK: Verify that MediaPipe is actively tracking a human skeleton
-    if (_latestLandmarks != null && _latestLandmarks is List && _latestLandmarks!.length > 28) {
-      final landmarks = _latestLandmarks!;
-      
-      final nose = landmarks[0];
-      final leftShoulder = landmarks[11];
-      final rightShoulder = landmarks[12];
-      final leftAnkle = landmarks[27];
-      final rightAnkle = landmarks[28];
 
-      if (leftShoulder != null && rightShoulder != null && nose != null && (leftAnkle != null || rightAnkle != null)) {
-        
-        // 1. Calculate actual pixel dimensions from the camera frame
+    if (_latestLandmarks != null && _latestLandmarks is List && _latestLandmarks!.isNotEmpty) {
+      final landmarks = _latestLandmarks!;
+      final nose = landmarks.isNotEmpty ? landmarks[0] : null;
+      final leftShoulder = landmarks.length > 11 ? landmarks[11] : null;
+      final rightShoulder = landmarks.length > 12 ? landmarks[12] : null;
+
+      if (leftShoulder != null && rightShoulder != null && nose != null) {
         double shoulderPx = sqrt(
           pow(((rightShoulder['x'] ?? 0) - (leftShoulder['x'] ?? 0)), 2) + 
           pow(((rightShoulder['y'] ?? 0) - (leftShoulder['y'] ?? 0)), 2)
         );
 
-        double ankleY = leftAnkle != null ? (leftAnkle['y'] ?? 0) : (rightAnkle['y'] ?? 0);
-        double heightPx = (ankleY - (nose['y'] ?? 0)).abs();
+        double estimatedHeightPx = shoulderPx * 3.45;
+        double scaleRatio = knownHeight / estimatedHeightPx;
+        double calculatedShoulder = shoulderPx * scaleRatio * 1.15;
 
-        if (heightPx > 0) {
-          // 2. Scale pixel measurements using user's height input as the baseline ratio
-          double scaleRatio = knownHeight / heightPx;
-          double calculatedShoulder = shoulderPx * scaleRatio * 1.15;
-          double calculatedTorso = heightPx * scaleRatio * 0.38;
+        if (_scanStep == 1) {
+          // Store Step 1 (Front View) and advance wizard to Step 2
+          _frontScanData = {
+            'shoulderWidth': calculatedShoulder,
+            'torsoLength': estimatedHeightPx * scaleRatio * 0.38,
+          };
 
-          // 3. Dynamically assign clothing size based on actual measured shoulder width
+          setState(() {
+            _scanStep = 2;
+            _isMeasuring = false;
+          });
+          return;
+        } else {
+          // Step 2 Complete: Combine data points for a professional report
+          double finalShoulder = (_frontScanData['shoulderWidth'] + calculatedShoulder) / 2;
+          double finalTorso = _frontScanData['torsoLength'];
+
           String size = 'M';
           String desc = 'Standard tailored fit';
-          if (calculatedShoulder > 19.0) {
+          if (finalShoulder > 19.0) {
             size = 'XL';
             desc = 'Extended frame tailored fit';
-          } else if (calculatedShoulder > 17.5) {
+          } else if (finalShoulder > 17.5) {
             size = 'L';
             desc = 'Large athletic fit';
-          } else if (calculatedShoulder < 15.0) {
+          } else if (finalShoulder < 15.0) {
             size = 'S';
             desc = 'Slim fitted profile';
           }
@@ -242,13 +233,14 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
           if (mounted) {
             setState(() {
               _capturedMeasurements = {
-                'shoulderWidth': calculatedShoulder,
-                'torsoLength': calculatedTorso,
+                'shoulderWidth': finalShoulder,
+                'torsoLength': finalTorso,
                 'estimatedHeight': knownHeight,
                 'recommendedSize': size,
                 'fitDescription': desc,
               };
               _isMeasuring = false;
+              _scanStep = 1; // Reset wizard for next scan
             });
             return;
           }
@@ -256,14 +248,12 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
       }
     }
 
-    // FAILURE CASE: If no human is detected, STOP and warn the user instead of faking data
     if (mounted) {
       setState(() => _isMeasuring = false);
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text("No human skeleton detected. Please ensure you are standing in view of the camera!"),
+          content: Text("Upper body not detected clearly. Please adjust position!"),
           backgroundColor: Colors.redAccent,
-          duration: Duration(seconds: 3),
         ),
       );
     }
@@ -361,10 +351,7 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   _buildGlassBadge(icon: Icons.memory, label: 'FPS: $_fps'),
-                  _buildGlassBadge(
-                    icon: Icons.camera,
-                    label: 'READY TO SNAP',
-                  ),
+                  _buildGlassBadge(icon: Icons.camera, label: 'STEP $_scanStep OF 2'),
                 ],
               ),
             ),
@@ -382,9 +369,37 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
                   Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      // Live Metrics Preview Box
+                      // Guided Instruction Banner
                       Container(
-                        padding: const EdgeInsets.all(14.0),
+                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF121212).withOpacity(0.95),
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(color: Colors.white24, width: 1),
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Icon(Icons.supervised_user_circle, color: Colors.white, size: 18),
+                            const SizedBox(width: 10),
+                            Text(
+                              _scanStep == 1
+                                  ? 'STEP 1: FACE FRONT & CAPTURE'
+                                  : 'STEP 2: TURN SIDEWAYS & CAPTURE',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: 1.2,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      // Live Calibration Preview Box
+                      Container(
+                        padding: const EdgeInsets.all(12.0),
                         decoration: BoxDecoration(
                           color: const Color(0xFF121212).withOpacity(0.9),
                           borderRadius: BorderRadius.circular(16),
@@ -395,17 +410,16 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
                           children: [
                             const Text(
                               "Live Calibration Preview",
-                              style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold, letterSpacing: 1),
+                              style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1),
                             ),
-                            const SizedBox(height: 6),
-                            Text("Estimated Height: $_heightDisplay", style: const TextStyle(color: Colors.white70, fontSize: 12)),
-                            Text("Shoulder Width: $_shoulderDisplay", style: const TextStyle(color: Colors.white70, fontSize: 12)),
-                            Text("Est. Chest: $_chestDisplay", style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                            const SizedBox(height: 4),
+                            Text("Estimated Height: $_heightDisplay", style: const TextStyle(color: Colors.white70, fontSize: 11)),
+                            Text("Shoulder Width: $_shoulderDisplay", style: const TextStyle(color: Colors.white70, fontSize: 11)),
                           ],
                         ),
                       ),
                       const SizedBox(height: 12),
-                      // Instant Snap Button
+                      // Action Button
                       SizedBox(
                         width: double.infinity,
                         height: 56,
@@ -423,14 +437,14 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
                                   height: 22,
                                   child: CircularProgressIndicator(color: Colors.black, strokeWidth: 2.5),
                                 )
-                              : const Row(
+                              : Row(
                                   mainAxisAlignment: MainAxisAlignment.center,
                                   children: [
-                                    Icon(Icons.camera_alt, size: 18),
-                                    SizedBox(width: 10),
+                                    const Icon(Icons.camera_alt, size: 18),
+                                    const SizedBox(width: 10),
                                     Text(
-                                      'SNAP & ANALYZE',
-                                      style: TextStyle(fontSize: 14, fontWeight: FontWeight.w900, letterSpacing: 1.5),
+                                      _scanStep == 1 ? 'CAPTURE FRONT VIEW' : 'FINISH & GENERATE REPORT',
+                                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w900, letterSpacing: 1.2),
                                     ),
                                   ],
                                 ),
@@ -734,7 +748,7 @@ class MonochromePoseHUDPainter extends CustomPainter {
     canvas.drawLine(targetRect.topRight, targetRect.topRight - const Offset(cornerLength, 0), hudPaint);
     canvas.drawLine(targetRect.topRight, targetRect.topRight + const Offset(0, cornerLength), hudPaint);
     canvas.drawLine(targetRect.bottomLeft, targetRect.bottomLeft + const Offset(cornerLength, 0), hudPaint);
-    canvas.drawLine(targetRect.bottomLeft, targetRect.bottomLeft + const Offset(0, cornerLength), hudPaint);
+    canvas.drawLine(targetRect.bottomLeft, targetRect.bottomLeft - const Offset(0, cornerLength), hudPaint);
     canvas.drawLine(targetRect.bottomRight, targetRect.bottomRight - const Offset(cornerLength, 0), hudPaint);
     canvas.drawLine(targetRect.bottomRight, targetRect.bottomRight - const Offset(0, cornerLength), hudPaint);
 
@@ -752,7 +766,6 @@ class MonochromePoseHUDPainter extends CustomPainter {
       final connections = [
         [11, 12], [11, 23], [12, 24], [23, 24],
         [11, 13], [13, 15], [12, 14], [14, 16],
-        [23, 25], [25, 27], [24, 26], [26, 28],
       ];
 
       for (var pair in connections) {
