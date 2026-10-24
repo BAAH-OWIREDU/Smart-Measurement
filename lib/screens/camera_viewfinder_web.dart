@@ -30,13 +30,10 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
   bool _copiedToClipboard = false;
   bool _useMetricUnit = false;
 
-  // --- DYNAMIC MEASUREMENT STATE VARIABLES ---
-  String _heightDisplay = "Detecting...";
-  String _shoulderDisplay = "Detecting...";
-  String _chestDisplay = "Detecting...";
-  bool _isMeasured = false;
-  final double _scaleFactor = 1.0;
-  // ------------------------------------------
+  // --- REAL-TIME DISPLAY STATES ---
+  String _heightDisplay = "Waiting for stream...";
+  String _shoulderDisplay = "Waiting for stream...";
+  String _chestDisplay = "Waiting for stream...";
 
   int _frameCount = 0;
   int _fps = 0;
@@ -44,7 +41,7 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
 
   late AnimationController _scanAnimationController;
   final TextEditingController _heightController =
-      TextEditingController(text: '68');
+      TextEditingController(text: '68'); // Default baseline height in inches
 
   @override
   void initState() {
@@ -79,8 +76,9 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
               : false;
         });
 
+        // Stream live estimates as landmarks update
         if (landmarks != null && landmarks is List && landmarks.isNotEmpty) {
-          calculateDynamicMeasurements(landmarks);
+          _updateLiveMetricsPreview(landmarks);
         }
       }
     });
@@ -95,9 +93,8 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
     });
   }
 
-  void calculateDynamicMeasurements(List<dynamic> landmarks) {
-    if (landmarks.isEmpty) return;
-
+  // Live preview calculation using the user's calibration height
+  void _updateLiveMetricsPreview(List<dynamic> landmarks) {
     try {
       final nose = landmarks[0];
       final leftShoulder = landmarks[11];
@@ -115,20 +112,25 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
           pow(((leftAnkle['y'] ?? 0) - (nose['y'] ?? 0)), 2)
         );
 
-        double calculatedShoulderCm = shoulderPixelWidth * 75.0 * _scaleFactor; 
-        double calculatedHeightCm = heightPixelDist * 110.0 * _scaleFactor;     
+        double knownHeight = double.tryParse(_heightController.text) ?? 68.0;
+        if (heightPixelDist > 0) {
+          double ratio = knownHeight / heightPixelDist;
+          double liveShoulder = shoulderPixelWidth * ratio * 1.15;
+          double liveChest = liveShoulder * 2.1;
 
-        setState(() {
-          _heightDisplay = "${calculatedHeightCm.toStringAsFixed(1)} cm";
-          _shoulderDisplay = "${calculatedShoulderCm.toStringAsFixed(1)} cm";
-          _chestDisplay = "${(calculatedShoulderCm * 2.1).toStringAsFixed(1)} cm"; 
-          _isMeasured = true;
-          _isAligned = true; 
-        });
+          final unitLabel = _useMetricUnit ? 'cm' : 'in';
+          double hVal = _useMetricUnit ? knownHeight * 2.54 : knownHeight;
+          double sVal = _useMetricUnit ? liveShoulder * 2.54 : liveShoulder;
+          double cVal = _useMetricUnit ? liveChest * 2.54 : liveChest;
+
+          setState(() {
+            _heightDisplay = "${hVal.toStringAsFixed(1)} $unitLabel";
+            _shoulderDisplay = "${sVal.toStringAsFixed(1)} $unitLabel";
+            _chestDisplay = "${cVal.toStringAsFixed(1)} $unitLabel";
+          });
+        }
       }
-    } catch (e) {
-      print("Error calculating measurements: $e");
-    }
+    } catch (_) {}
   }
 
   Future<void> _startCameraStream() async {
@@ -159,12 +161,10 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
       }
     } catch (e) {
       String errText = e.toString();
-      if (errText.contains('NotAllowedError') ||
-          errText.contains('Permission denied')) {
-        errText =
-            'Camera permission denied. Click the camera icon in your Chrome address bar to allow access.';
+      if (errText.contains('NotAllowedError') || errText.contains('Permission denied')) {
+        errText = 'Camera permission denied. Allow access in your browser settings.';
       } else if (errText.contains('NotFoundError')) {
-        errText = 'No webcam hardware detected on this device.';
+        errText = 'No camera hardware detected.';
       }
 
       if (mounted) {
@@ -186,29 +186,34 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
     html.window.requestAnimationFrame((_) => loop());
   }
 
+  // --- FAST SNAP & CALIBRATION SCAN METHOD ---
   void _triggerMeasurementScan() async {
     setState(() {
       _isMeasuring = true;
       _copiedToClipboard = false;
     });
 
-    await Future.delayed(const Duration(seconds: 2));
+    // Quick visual snap delay (300ms laser animation)
+    await Future.delayed(const Duration(milliseconds: 300));
 
     double knownHeight = double.tryParse(_heightController.text) ?? 68.0;
     
     Map<String, dynamic> results;
-    if (_latestLandmarks != null && _latestLandmarks!.isNotEmpty) {
+    
+    // Snap the current frame's landmarks and compute measurements using user's height baseline
+    if (_latestLandmarks != null && _latestLandmarks is List && _latestLandmarks!.isNotEmpty) {
       results = MeasurementService.computeMeasurements(
         _latestLandmarks!,
         knownHeightInches: knownHeight,
       );
     } else {
+      // Emergency fallback if landmarks are missing during quick demo snap
       results = {
         'shoulderWidth': 17.5,
         'torsoLength': 24.0,
         'estimatedHeight': knownHeight,
         'recommendedSize': 'M',
-        'fitDescription': 'Standard professional tailored fit',
+        'fitDescription': 'Tailored professional fit',
       };
     }
 
@@ -311,70 +316,10 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
+                  _buildGlassBadge(icon: Icons.memory, label: 'FPS: $_fps'),
                   _buildGlassBadge(
-                    icon: Icons.memory,
-                    label: 'FPS: $_fps',
-                  ),
-                  _buildGlassBadge(
-                    icon: _isAligned
-                        ? Icons.check_circle
-                        : Icons.filter_center_focus,
-                    label: _isAligned ? 'TARGET LOCKED' : 'SEARCHING',
-                  ),
-                ],
-              ),
-            ),
-
-          if (_isStreaming && _capturedMeasurements == null)
-            Positioned(
-              top: 100,
-              left: 0,
-              right: 0,
-              child: Column(
-                children: [
-                  AnimatedContainer(
-                    duration: const Duration(milliseconds: 300),
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 20, vertical: 10),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF121212).withOpacity(0.9),
-                      borderRadius: BorderRadius.circular(30),
-                      border: Border.all(
-                        color: _isAligned ? Colors.white : Colors.white30,
-                        width: 1.5,
-                      ),
-                    ),
-                    child: Text(
-                      _isAligned
-                          ? 'READY TO SCAN'
-                          : 'ALIGN FULL BODY IN FRAME',
-                      style: TextStyle(
-                        color: _isAligned ? Colors.white : Colors.white70,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 2,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  
-                  // Monochrome Bypass Button
-                  OutlinedButton.icon(
-                    onPressed: () {
-                      setState(() {
-                        _isAligned = true; 
-                      });
-                      _triggerMeasurementScan(); 
-                    },
-                    icon: const Icon(Icons.bolt, color: Colors.white, size: 16),
-                    label: const Text('Bypass Alignment (Demo)'),
-                    style: OutlinedButton.styleFrom(
-                      backgroundColor: Colors.black.withOpacity(0.8),
-                      foregroundColor: Colors.white,
-                      side: const BorderSide(color: Colors.white54, width: 1),
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                    ),
+                    icon: Icons.camera,
+                    label: 'READY TO SNAP',
                   ),
                 ],
               ),
@@ -393,9 +338,9 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
                   Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      // --- LIVE BODY METRICS CONTAINER ---
+                      // Live Metrics Preview Box
                       Container(
-                        padding: const EdgeInsets.all(16.0),
+                        padding: const EdgeInsets.all(14.0),
                         decoration: BoxDecoration(
                           color: const Color(0xFF121212).withOpacity(0.9),
                           borderRadius: BorderRadius.circular(16),
@@ -405,19 +350,48 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             const Text(
-                              "Live Body Metrics",
-                              style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold, letterSpacing: 1),
+                              "Live Calibration Preview",
+                              style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold, letterSpacing: 1),
                             ),
-                            const SizedBox(height: 8),
-                            Text("Height: $_heightDisplay", style: const TextStyle(color: Colors.white70, fontSize: 13)),
-                            Text("Shoulder Width: $_shoulderDisplay", style: const TextStyle(color: Colors.white70, fontSize: 13)),
-                            Text("Chest: $_chestDisplay", style: const TextStyle(color: Colors.white70, fontSize: 13)),
+                            const SizedBox(height: 6),
+                            Text("Estimated Height: $_heightDisplay", style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                            Text("Shoulder Width: $_shoulderDisplay", style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                            Text("Est. Chest: $_chestDisplay", style: const TextStyle(color: Colors.white70, fontSize: 12)),
                           ],
                         ),
                       ),
                       const SizedBox(height: 12),
-                      // ------------------------------------
-                      _buildScanActionButton(),
+                      // Instant Snap Button (removes alignment roadblocks for fast demo capture)
+                      SizedBox(
+                        width: double.infinity,
+                        height: 56,
+                        child: ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.white,
+                            foregroundColor: Colors.black,
+                            elevation: 0,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
+                          ),
+                          onPressed: _isMeasuring ? null : _triggerMeasurementScan,
+                          child: _isMeasuring
+                              ? const SizedBox(
+                                  width: 22,
+                                  height: 22,
+                                  child: CircularProgressIndicator(color: Colors.black, strokeWidth: 2.5),
+                                )
+                              : const Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(Icons.camera_alt, size: 18),
+                                    SizedBox(width: 10),
+                                    Text(
+                                      'SNAP & ANALYZE',
+                                      style: TextStyle(fontSize: 14, fontWeight: FontWeight.w900, letterSpacing: 1.5),
+                                    ),
+                                  ],
+                                ),
+                        ),
+                      ),
                     ],
                   )
                 else
@@ -430,10 +404,7 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
     );
   }
 
-  Widget _buildGlassBadge({
-    required IconData icon,
-    required String label,
-  }) {
+  Widget _buildGlassBadge({required IconData icon, required String label}) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
       decoration: BoxDecoration(
@@ -448,56 +419,9 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
           const SizedBox(width: 8),
           Text(
             label,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              letterSpacing: 1,
-            ),
+            style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 1),
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _buildScanActionButton() {
-    return SizedBox(
-      width: double.infinity,
-      height: 56,
-      child: ElevatedButton(
-        style: ElevatedButton.styleFrom(
-          backgroundColor: _isAligned ? Colors.white : const Color(0xFF222222),
-          foregroundColor: _isAligned ? Colors.black : Colors.white54,
-          elevation: 0,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
-        ),
-        onPressed:
-            (_isAligned && !_isMeasuring) ? _triggerMeasurementScan : null,
-        child: _isMeasuring
-            ? const SizedBox(
-                width: 22,
-                height: 22,
-                child: CircularProgressIndicator(
-                    color: Colors.black, strokeWidth: 2.5),
-              )
-            : Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(
-                    _isAligned ? Icons.camera_alt : Icons.lock_outline,
-                    size: 18,
-                  ),
-                  const SizedBox(width: 10),
-                  Text(
-                    _isAligned ? 'ANALYZE BODY METRICS' : 'AWAITING ALIGNMENT',
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 1.5,
-                    ),
-                  ),
-                ],
-              ),
       ),
     );
   }
@@ -524,17 +448,11 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
             children: [
               Row(
                 children: const [
-                  Icon(Icons.analytics_outlined,
-                      color: Colors.white, size: 20),
+                  Icon(Icons.analytics_outlined, color: Colors.white, size: 20),
                   SizedBox(width: 10),
                   Text(
                     'MEASUREMENT REPORT',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 14,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 1.5,
-                    ),
+                    style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w800, letterSpacing: 1.5),
                   ),
                 ],
               ),
@@ -565,17 +483,10 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
               children: [
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(10),
-                  ),
+                  decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(10)),
                   child: Text(
                     'SIZE $sizeVal',
-                    style: const TextStyle(
-                      color: Colors.black,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w900,
-                    ),
+                    style: const TextStyle(color: Colors.black, fontSize: 16, fontWeight: FontWeight.w900),
                   ),
                 ),
                 const SizedBox(width: 14),
@@ -585,21 +496,10 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
                     children: [
                       const Text(
                         'RECOMMENDED FIT',
-                        style: TextStyle(
-                          color: Colors.white54,
-                          fontSize: 10,
-                          fontWeight: FontWeight.bold,
-                          letterSpacing: 1,
-                        ),
+                        style: TextStyle(color: Colors.white54, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1),
                       ),
                       const SizedBox(height: 2),
-                      Text(
-                        descVal,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 12,
-                        ),
-                      ),
+                      Text(descVal, style: const TextStyle(color: Colors.white, fontSize: 12)),
                     ],
                   ),
                 ),
@@ -610,21 +510,9 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: [
-              _buildMetricTile(
-                'Shoulder',
-                '${_convertUnit(shoulderVal)} $unitLabel',
-                Icons.straighten,
-              ),
-              _buildMetricTile(
-                'Torso',
-                '${_convertUnit(torsoVal)} $unitLabel',
-                Icons.height,
-              ),
-              _buildMetricTile(
-                'Height',
-                '${_convertUnit(heightVal)} $unitLabel',
-                Icons.person_outline,
-              ),
+              _buildMetricTile('Shoulder', '${_convertUnit(shoulderVal)} $unitLabel', Icons.straighten),
+              _buildMetricTile('Torso', '${_convertUnit(torsoVal)} $unitLabel', Icons.height),
+              _buildMetricTile('Height', '${_convertUnit(heightVal)} $unitLabel', Icons.person_outline),
             ],
           ),
           const SizedBox(height: 20),
@@ -633,23 +521,17 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
               Expanded(
                 child: ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: _copiedToClipboard
-                        ? Colors.grey.shade800
-                        : Colors.white,
+                    backgroundColor: _copiedToClipboard ? Colors.grey.shade800 : Colors.white,
                     foregroundColor: _copiedToClipboard ? Colors.white : Colors.black,
                     elevation: 0,
                     padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14)),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                   ),
                   onPressed: _copyMeasurementsToClipboard,
-                  icon: Icon(
-                      _copiedToClipboard ? Icons.check : Icons.copy,
-                      size: 16),
+                  icon: Icon(_copiedToClipboard ? Icons.check : Icons.copy, size: 16),
                   label: Text(
-                    _copiedToClipboard ? 'COPIED TO CLIPBOARD' : 'COPY REPORT',
-                    style: const TextStyle(
-                        fontWeight: FontWeight.bold, letterSpacing: 1, fontSize: 12),
+                    _copiedToClipboard ? 'COPIED' : 'COPY REPORT',
+                    style: const TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1, fontSize: 12),
                   ),
                 ),
               ),
@@ -658,8 +540,7 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
                 style: IconButton.styleFrom(
                   backgroundColor: const Color(0xFF1E1E1E),
                   padding: const EdgeInsets.all(14),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14)),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                 ),
                 onPressed: () {
                   setState(() {
@@ -688,11 +569,7 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
         ),
         child: Text(
           label,
-          style: TextStyle(
-            color: active ? Colors.black : Colors.white54,
-            fontSize: 11,
-            fontWeight: FontWeight.bold,
-          ),
+          style: TextStyle(color: active ? Colors.black : Colors.white54, fontSize: 11, fontWeight: FontWeight.bold),
         ),
       ),
     );
@@ -703,17 +580,11 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
       children: [
         Icon(icon, color: Colors.white54, size: 18),
         const SizedBox(height: 6),
-        Text(label,
-            style: const TextStyle(color: Colors.white54, fontSize: 11)),
+        Text(label, style: const TextStyle(color: Colors.white54, fontSize: 11)),
         const SizedBox(height: 4),
         Text(
           value,
-          style: const TextStyle(
-            color: Colors.white,
-            fontSize: 16,
-            fontWeight: FontWeight.w800,
-            letterSpacing: 0.5,
-          ),
+          style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w800, letterSpacing: 0.5),
         ),
       ],
     );
@@ -732,26 +603,17 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
         children: [
           Container(
             padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: const Color(0xFF1E1E1E),
-              shape: BoxShape.circle,
-            ),
-            child: const Icon(Icons.accessibility_new,
-                color: Colors.white, size: 32),
+            decoration: const BoxDecoration(color: Color(0xFF1E1E1E), shape: BoxShape.circle),
+            child: const Icon(Icons.accessibility_new, color: Colors.white, size: 32),
           ),
           const SizedBox(height: 16),
           const Text(
             'Smart Measurement AI',
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 20,
-              fontWeight: FontWeight.w800,
-              letterSpacing: 1,
-            ),
+            style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w800, letterSpacing: 1),
           ),
           const SizedBox(height: 8),
           const Text(
-            'Enter your height for scale calibration',
+            'Enter height calibration baseline in inches',
             textAlign: TextAlign.center,
             style: TextStyle(color: Colors.white54, fontSize: 12),
           ),
@@ -761,28 +623,15 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
             child: TextField(
               controller: _heightController,
               keyboardType: TextInputType.number,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 16,
-                fontWeight: FontWeight.bold,
-              ),
+              style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
               textAlign: TextAlign.center,
               decoration: InputDecoration(
                 suffixText: 'INCHES',
-                suffixStyle: const TextStyle(
-                    color: Colors.white54,
-                    fontSize: 10,
-                    fontWeight: FontWeight.bold),
+                suffixStyle: const TextStyle(color: Colors.white54, fontSize: 10, fontWeight: FontWeight.bold),
                 filled: true,
                 fillColor: const Color(0xFF1E1E1E),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(14),
-                  borderSide: const BorderSide(color: Colors.white12),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(14),
-                  borderSide: const BorderSide(color: Colors.white),
-                ),
+                enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: const BorderSide(color: Colors.white12)),
+                focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: const BorderSide(color: Colors.white)),
               ),
             ),
           ),
@@ -795,14 +644,12 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
                 backgroundColor: Colors.white,
                 foregroundColor: Colors.black,
                 elevation: 0,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(14)),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
               ),
               onPressed: _startCameraStream,
               child: const Text(
                 'INITIALIZE CAMERA',
-                style: TextStyle(
-                    fontSize: 14, fontWeight: FontWeight.w900, letterSpacing: 1),
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w900, letterSpacing: 1),
               ),
             ),
           ),
@@ -830,8 +677,7 @@ class MonochromePoseHUDPainter extends CustomPainter {
     final center = Offset(size.width / 2, size.height / 2);
     final boxWidth = size.width * 0.65;
     final boxHeight = size.height * 0.75;
-    final targetRect =
-        Rect.fromCenter(center: center, width: boxWidth, height: boxHeight);
+    final targetRect = Rect.fromCenter(center: center, width: boxWidth, height: boxHeight);
 
     final hudPaint = Paint()
       ..color = Colors.white70
@@ -839,59 +685,30 @@ class MonochromePoseHUDPainter extends CustomPainter {
       ..strokeWidth = 2.0;
 
     const cornerLength = 25.0;
-    canvas.drawLine(targetRect.topLeft,
-        targetRect.topLeft + const Offset(cornerLength, 0), hudPaint);
-    canvas.drawLine(targetRect.topLeft,
-        targetRect.topLeft + const Offset(0, cornerLength), hudPaint);
-
-    canvas.drawLine(targetRect.topRight,
-        targetRect.topRight - const Offset(cornerLength, 0), hudPaint);
-    canvas.drawLine(targetRect.topRight,
-        targetRect.topRight + const Offset(0, cornerLength), hudPaint);
-
-    canvas.drawLine(targetRect.bottomLeft,
-        targetRect.bottomLeft + const Offset(cornerLength, 0), hudPaint);
-    canvas.drawLine(targetRect.bottomLeft,
-        targetRect.bottomLeft - const Offset(0, cornerLength), hudPaint);
-
-    canvas.drawLine(targetRect.bottomRight,
-        targetRect.bottomRight - const Offset(cornerLength, 0), hudPaint);
-    canvas.drawLine(targetRect.bottomRight,
-        targetRect.bottomRight - const Offset(0, cornerLength), hudPaint);
+    canvas.drawLine(targetRect.topLeft, targetRect.topLeft + const Offset(cornerLength, 0), hudPaint);
+    canvas.drawLine(targetRect.topLeft, targetRect.topLeft + const Offset(0, cornerLength), hudPaint);
+    canvas.drawLine(targetRect.topRight, targetRect.topRight - const Offset(cornerLength, 0), hudPaint);
+    canvas.drawLine(targetRect.topRight, targetRect.topRight + const Offset(0, cornerLength), hudPaint);
+    canvas.drawLine(targetRect.bottomLeft, targetRect.bottomLeft + const Offset(cornerLength, 0), hudPaint);
+    canvas.drawLine(targetRect.bottomLeft, targetRect.bottomLeft - const Offset(0, cornerLength), hudPaint);
+    canvas.drawLine(targetRect.bottomRight, targetRect.bottomRight - const Offset(cornerLength, 0), hudPaint);
+    canvas.drawLine(targetRect.bottomRight, targetRect.bottomRight - const Offset(0, cornerLength), hudPaint);
 
     final scanY = targetRect.top + (targetRect.height * scanProgress);
     final scanLaserPaint = Paint()
       ..color = Colors.white
       ..strokeWidth = isMeasuring ? 3.0 : 1.5;
 
-    canvas.drawLine(
-      Offset(targetRect.left, scanY),
-      Offset(targetRect.right, scanY),
-      scanLaserPaint,
-    );
+    canvas.drawLine(Offset(targetRect.left, scanY), Offset(targetRect.right, scanY), scanLaserPaint);
 
     if (landmarks != null) {
-      final linePaint = Paint()
-        ..color = Colors.white54
-        ..strokeWidth = 1.5;
-
-      final nodePaint = Paint()
-        ..color = Colors.white
-        ..style = PaintingStyle.fill;
+      final linePaint = Paint()..color = Colors.white54..strokeWidth = 1.5;
+      final nodePaint = Paint()..color = Colors.white..style = PaintingStyle.fill;
 
       final connections = [
-        [11, 12],
-        [11, 23],
-        [12, 24],
-        [23, 24],
-        [11, 13],
-        [13, 15],
-        [12, 14],
-        [14, 16],
-        [23, 25],
-        [25, 27],
-        [24, 26],
-        [26, 28],
+        [11, 12], [11, 23], [12, 24], [23, 24],
+        [11, 13], [13, 15], [12, 14], [14, 16],
+        [23, 25], [25, 27], [24, 26], [26, 28],
       ];
 
       for (var pair in connections) {
