@@ -79,7 +79,6 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
               : false;
         });
 
-        // Trigger live dynamic calculations as landmarks stream in
         if (landmarks != null && landmarks is List && landmarks.isNotEmpty) {
           calculateDynamicMeasurements(landmarks);
         }
@@ -96,37 +95,29 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
     });
   }
 
-  // --- DYNAMIC CALCULATION FUNCTION ---
   void calculateDynamicMeasurements(List<dynamic> landmarks) {
     if (landmarks.isEmpty) return;
 
     try {
-      // Assuming MediaPipe standard indices:
-      // 0: Nose, 11: Left Shoulder, 12: Right Shoulder, 27: Left Ankle
       final nose = landmarks[0];
       final leftShoulder = landmarks[11];
       final rightShoulder = landmarks[12];
       final leftAnkle = landmarks[27];
 
       if (leftShoulder != null && rightShoulder != null && nose != null && leftAnkle != null) {
-        
-        // 1. Calculate Shoulder Width (Pixel distance using map keys)
         double shoulderPixelWidth = sqrt(
           pow(((rightShoulder['x'] ?? 0) - (leftShoulder['x'] ?? 0)), 2) + 
           pow(((rightShoulder['y'] ?? 0) - (leftShoulder['y'] ?? 0)), 2)
         );
 
-        // 2. Calculate Estimated Height (Nose to Ankle pixel distance)
         double heightPixelDist = sqrt(
           pow(((leftAnkle['x'] ?? 0) - (nose['x'] ?? 0)), 2) + 
           pow(((leftAnkle['y'] ?? 0) - (nose['y'] ?? 0)), 2)
         );
 
-        // Convert pixels to realistic relative units (scaled)
         double calculatedShoulderCm = shoulderPixelWidth * 75.0 * _scaleFactor; 
         double calculatedHeightCm = heightPixelDist * 110.0 * _scaleFactor;     
 
-        // 3. Update UI State so numbers render immediately
         setState(() {
           _heightDisplay = "${calculatedHeightCm.toStringAsFixed(1)} cm";
           _shoulderDisplay = "${calculatedShoulderCm.toStringAsFixed(1)} cm";
@@ -217,7 +208,7 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
         'torsoLength': 24.0,
         'estimatedHeight': knownHeight,
         'recommendedSize': 'M',
-        'fitDescription': 'Standard athletic tailored fit',
+        'fitDescription': 'Standard professional tailored fit',
       };
     }
 
@@ -274,7 +265,7 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
     final unitLabel = _useMetricUnit ? 'cm' : 'in';
 
     return Scaffold(
-      backgroundColor: const Color(0xFF0A0E1A),
+      backgroundColor: Colors.black,
       body: Stack(
         fit: StackFit.expand,
         children: [
@@ -282,14 +273,14 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
             HtmlElementView(viewType: _viewId)
           else
             Container(
-              color: const Color(0xFF0A0E1A),
+              color: Colors.black,
               child: Center(
                 child: _errorMessage != null
                     ? Padding(
                         padding: const EdgeInsets.all(24.0),
                         child: Text(
                           _errorMessage!,
-                          style: const TextStyle(color: Colors.redAccent, fontSize: 16),
+                          style: const TextStyle(color: Colors.white70, fontSize: 16),
                           textAlign: TextAlign.center,
                         ),
                       )
@@ -302,7 +293,7 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
               animation: _scanAnimationController,
               builder: (context, child) {
                 return CustomPaint(
-                  painter: FuturisticPoseHUDPainter(
+                  painter: MonochromePoseHUDPainter(
                     landmarks: _latestLandmarks,
                     isAligned: _isAligned,
                     scanProgress: _scanAnimationController.value,
@@ -323,14 +314,12 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
                   _buildGlassBadge(
                     icon: Icons.memory,
                     label: 'FPS: $_fps',
-                    color: Colors.cyanAccent,
                   ),
                   _buildGlassBadge(
                     icon: _isAligned
-                        ? Icons.check_circle_outline
+                        ? Icons.check_circle
                         : Icons.filter_center_focus,
-                    label: _isAligned ? 'Target Locked' : 'Searching Target',
-                    color: _isAligned ? Colors.greenAccent : Colors.orangeAccent,
+                    label: _isAligned ? 'TARGET LOCKED' : 'SEARCHING',
                   ),
                 ],
               ),
@@ -348,54 +337,43 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
                     padding: const EdgeInsets.symmetric(
                         horizontal: 20, vertical: 10),
                     decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(0.65),
+                      color: const Color(0xFF121212).withOpacity(0.9),
                       borderRadius: BorderRadius.circular(30),
                       border: Border.all(
-                        color: _isAligned
-                            ? Colors.greenAccent.withOpacity(0.8)
-                            : Colors.yellowAccent.withOpacity(0.5),
+                        color: _isAligned ? Colors.white : Colors.white30,
                         width: 1.5,
                       ),
-                      boxShadow: [
-                        BoxShadow(
-                          color: (_isAligned
-                                  ? Colors.greenAccent
-                                  : Colors.yellowAccent)
-                              .withOpacity(0.2),
-                          blurRadius: 15,
-                        )
-                      ],
                     ),
                     child: Text(
                       _isAligned
                           ? 'READY TO SCAN'
                           : 'ALIGN FULL BODY IN FRAME',
                       style: TextStyle(
-                        color: _isAligned
-                            ? Colors.greenAccent
-                            : Colors.yellowAccent,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w800,
+                        color: _isAligned ? Colors.white : Colors.white70,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
                         letterSpacing: 2,
                       ),
                     ),
                   ),
                   const SizedBox(height: 12),
                   
-                  // Live Demo Bypass Button
-                  ElevatedButton.icon(
+                  // Monochrome Bypass Button
+                  OutlinedButton.icon(
                     onPressed: () {
                       setState(() {
                         _isAligned = true; 
                       });
                       _triggerMeasurementScan(); 
                     },
-                    icon: const Icon(Icons.bolt, color: Colors.amber, size: 18),
-                    label: const Text('Bypass Alignment (Live Demo)'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.deepOrange,
+                    icon: const Icon(Icons.bolt, color: Colors.white, size: 16),
+                    label: const Text('Bypass Alignment (Demo)'),
+                    style: OutlinedButton.styleFrom(
+                      backgroundColor: Colors.black.withOpacity(0.8),
                       foregroundColor: Colors.white,
+                      side: const BorderSide(color: Colors.white54, width: 1),
                       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
                     ),
                   ),
                 ],
@@ -419,21 +397,21 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
                       Container(
                         padding: const EdgeInsets.all(16.0),
                         decoration: BoxDecoration(
-                          color: Colors.black87.withOpacity(0.85),
+                          color: const Color(0xFF121212).withOpacity(0.9),
                           borderRadius: BorderRadius.circular(16),
-                          border: Border.all(color: Colors.cyanAccent.withOpacity(0.3)),
+                          border: Border.all(color: Colors.white24, width: 1),
                         ),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             const Text(
                               "Live Body Metrics",
-                              style: TextStyle(color: Colors.greenAccent, fontSize: 16, fontWeight: FontWeight.bold),
+                              style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold, letterSpacing: 1),
                             ),
                             const SizedBox(height: 8),
-                            Text("Height: $_heightDisplay", style: const TextStyle(color: Colors.white, fontSize: 14)),
-                            Text("Shoulder Width: $_shoulderDisplay", style: const TextStyle(color: Colors.white, fontSize: 14)),
-                            Text("Chest: $_chestDisplay", style: const TextStyle(color: Colors.white, fontSize: 14)),
+                            Text("Height: $_heightDisplay", style: const TextStyle(color: Colors.white70, fontSize: 13)),
+                            Text("Shoulder Width: $_shoulderDisplay", style: const TextStyle(color: Colors.white70, fontSize: 13)),
+                            Text("Chest: $_chestDisplay", style: const TextStyle(color: Colors.white70, fontSize: 13)),
                           ],
                         ),
                       ),
@@ -455,33 +433,26 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
   Widget _buildGlassBadge({
     required IconData icon,
     required String label,
-    required Color color,
   }) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
       decoration: BoxDecoration(
-        color: Colors.black.withOpacity(0.6),
+        color: const Color(0xFF161616),
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: color.withOpacity(0.5), width: 1.5),
-        boxShadow: [
-          BoxShadow(
-            color: color.withOpacity(0.15),
-            blurRadius: 10,
-          )
-        ],
+        border: Border.all(color: Colors.white24, width: 1),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, color: color, size: 16),
+          Icon(icon, color: Colors.white, size: 15),
           const SizedBox(width: 8),
           Text(
             label,
             style: const TextStyle(
               color: Colors.white,
-              fontSize: 13,
-              fontWeight: FontWeight.bold,
-              letterSpacing: 0.5,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 1,
             ),
           ),
         ],
@@ -490,56 +461,38 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
   }
 
   Widget _buildScanActionButton() {
-    return Container(
+    return SizedBox(
       width: double.infinity,
-      height: 60,
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(30),
-        gradient: _isAligned
-            ? const LinearGradient(
-                colors: [Color(0xFF00FF87), Color(0xFF60EFFF)])
-            : LinearGradient(
-                colors: [Colors.grey.shade800, Colors.grey.shade900]),
-        boxShadow: _isAligned
-            ? [
-                BoxShadow(
-                  color: const Color(0xFF00FF87).withOpacity(0.4),
-                  blurRadius: 20,
-                  spreadRadius: 2,
-                )
-              ]
-            : [],
-      ),
+      height: 56,
       child: ElevatedButton(
         style: ElevatedButton.styleFrom(
-          backgroundColor: Colors.transparent,
-          shadowColor: Colors.transparent,
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+          backgroundColor: _isAligned ? Colors.white : const Color(0xFF222222),
+          foregroundColor: _isAligned ? Colors.black : Colors.white54,
+          elevation: 0,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
         ),
         onPressed:
             (_isAligned && !_isMeasuring) ? _triggerMeasurementScan : null,
         child: _isMeasuring
             ? const SizedBox(
-                width: 24,
-                height: 24,
+                width: 22,
+                height: 22,
                 child: CircularProgressIndicator(
-                    color: Colors.black, strokeWidth: 3),
+                    color: Colors.black, strokeWidth: 2.5),
               )
             : Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Icon(
                     _isAligned ? Icons.camera_alt : Icons.lock_outline,
-                    color: _isAligned ? Colors.black : Colors.white38,
+                    size: 18,
                   ),
                   const SizedBox(width: 10),
                   Text(
                     _isAligned ? 'ANALYZE BODY METRICS' : 'AWAITING ALIGNMENT',
                     style: TextStyle(
-                      color: _isAligned ? Colors.black : Colors.white38,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w900,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w800,
                       letterSpacing: 1.5,
                     ),
                   ),
@@ -559,16 +512,9 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
     return Container(
       padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
-        color: const Color(0xFF0F172A).withOpacity(0.95),
+        color: const Color(0xFF121212),
         borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: Colors.cyanAccent.withOpacity(0.5), width: 1.5),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.cyanAccent.withOpacity(0.15),
-            blurRadius: 25,
-            spreadRadius: 2,
-          )
-        ],
+        border: Border.all(color: Colors.white24, width: 1),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -579,24 +525,24 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
               Row(
                 children: const [
                   Icon(Icons.analytics_outlined,
-                      color: Colors.cyanAccent, size: 22),
+                      color: Colors.white, size: 20),
                   SizedBox(width: 10),
                   Text(
-                    'AI MEASUREMENT SUMMARY',
+                    'MEASUREMENT REPORT',
                     style: TextStyle(
-                      color: Colors.cyanAccent,
-                      fontSize: 15,
+                      color: Colors.white,
+                      fontSize: 14,
                       fontWeight: FontWeight.w800,
-                      letterSpacing: 1.2,
+                      letterSpacing: 1.5,
                     ),
                   ),
                 ],
               ),
               Container(
                 decoration: BoxDecoration(
-                  color: Colors.black45,
+                  color: Colors.black,
                   borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: Colors.white12),
+                  border: Border.all(color: Colors.white24),
                 ),
                 child: Row(
                   children: [
@@ -611,23 +557,23 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             decoration: BoxDecoration(
-              color: Colors.cyanAccent.withOpacity(0.1),
+              color: const Color(0xFF1E1E1E),
               borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: Colors.cyanAccent.withOpacity(0.3)),
+              border: Border.all(color: Colors.white12),
             ),
             child: Row(
               children: [
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                   decoration: BoxDecoration(
-                    color: Colors.cyanAccent,
-                    borderRadius: BorderRadius.circular(12),
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(10),
                   ),
                   child: Text(
                     'SIZE $sizeVal',
                     style: const TextStyle(
                       color: Colors.black,
-                      fontSize: 18,
+                      fontSize: 16,
                       fontWeight: FontWeight.w900,
                     ),
                   ),
@@ -638,19 +584,19 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       const Text(
-                        'RECOMMENDED RETAIL SIZE',
+                        'RECOMMENDED FIT',
                         style: TextStyle(
-                          color: Colors.cyanAccent,
-                          fontSize: 11,
+                          color: Colors.white54,
+                          fontSize: 10,
                           fontWeight: FontWeight.bold,
-                          letterSpacing: 0.8,
+                          letterSpacing: 1,
                         ),
                       ),
                       const SizedBox(height: 2),
                       Text(
                         descVal,
                         style: const TextStyle(
-                          color: Colors.white70,
+                          color: Colors.white,
                           fontSize: 12,
                         ),
                       ),
@@ -665,17 +611,17 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
             mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: [
               _buildMetricTile(
-                'Shoulder Width',
+                'Shoulder',
                 '${_convertUnit(shoulderVal)} $unitLabel',
                 Icons.straighten,
               ),
               _buildMetricTile(
-                'Torso Height',
+                'Torso',
                 '${_convertUnit(torsoVal)} $unitLabel',
                 Icons.height,
               ),
               _buildMetricTile(
-                'Ref. Height',
+                'Height',
                 '${_convertUnit(heightVal)} $unitLabel',
                 Icons.person_outline,
               ),
@@ -688,28 +634,29 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
                 child: ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(
                     backgroundColor: _copiedToClipboard
-                        ? Colors.blueAccent
-                        : Colors.cyanAccent,
-                    foregroundColor: Colors.black,
+                        ? Colors.grey.shade800
+                        : Colors.white,
+                    foregroundColor: _copiedToClipboard ? Colors.white : Colors.black,
+                    elevation: 0,
                     padding: const EdgeInsets.symmetric(vertical: 14),
                     shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(14)),
                   ),
                   onPressed: _copyMeasurementsToClipboard,
                   icon: Icon(
-                      _copiedToClipboard ? Icons.check_circle : Icons.copy,
-                      size: 18),
+                      _copiedToClipboard ? Icons.check : Icons.copy,
+                      size: 16),
                   label: Text(
                     _copiedToClipboard ? 'COPIED TO CLIPBOARD' : 'COPY REPORT',
                     style: const TextStyle(
-                        fontWeight: FontWeight.bold, letterSpacing: 1),
+                        fontWeight: FontWeight.bold, letterSpacing: 1, fontSize: 12),
                   ),
                 ),
               ),
               const SizedBox(width: 12),
               IconButton(
                 style: IconButton.styleFrom(
-                  backgroundColor: Colors.white10,
+                  backgroundColor: const Color(0xFF1E1E1E),
                   padding: const EdgeInsets.all(14),
                   shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(14)),
@@ -720,7 +667,7 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
                     _copiedToClipboard = false;
                   });
                 },
-                icon: const Icon(Icons.refresh, color: Colors.white),
+                icon: const Icon(Icons.refresh, color: Colors.white, size: 18),
               ),
             ],
           ),
@@ -736,14 +683,14 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
         duration: const Duration(milliseconds: 200),
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         decoration: BoxDecoration(
-          color: active ? Colors.cyanAccent : Colors.transparent,
+          color: active ? Colors.white : Colors.transparent,
           borderRadius: BorderRadius.circular(16),
         ),
         child: Text(
           label,
           style: TextStyle(
             color: active ? Colors.black : Colors.white54,
-            fontSize: 12,
+            fontSize: 11,
             fontWeight: FontWeight.bold,
           ),
         ),
@@ -754,17 +701,17 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
   Widget _buildMetricTile(String label, String value, IconData icon) {
     return Column(
       children: [
-        Icon(icon, color: Colors.white38, size: 20),
+        Icon(icon, color: Colors.white54, size: 18),
         const SizedBox(height: 6),
         Text(label,
-            style: const TextStyle(color: Colors.white54, fontSize: 12)),
+            style: const TextStyle(color: Colors.white54, fontSize: 11)),
         const SizedBox(height: 4),
         Text(
           value,
           style: const TextStyle(
             color: Colors.white,
-            fontSize: 18,
-            fontWeight: FontWeight.w900,
+            fontSize: 16,
+            fontWeight: FontWeight.w800,
             letterSpacing: 0.5,
           ),
         ),
@@ -776,15 +723,9 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
     return Container(
       padding: const EdgeInsets.all(28),
       decoration: BoxDecoration(
-        color: const Color(0xFF0F172A).withOpacity(0.92),
-        borderRadius: BorderRadius.circular(28),
-        border: Border.all(color: Colors.white12),
-        boxShadow: const [
-          BoxShadow(
-            color: Colors.black54,
-            blurRadius: 30,
-          )
-        ],
+        color: const Color(0xFF121212),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: Colors.white24, width: 1),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -792,55 +733,55 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
-              color: Colors.cyanAccent.withOpacity(0.1),
+              color: const Color(0xFF1E1E1E),
               shape: BoxShape.circle,
             ),
             child: const Icon(Icons.accessibility_new,
-                color: Colors.cyanAccent, size: 36),
+                color: Colors.white, size: 32),
           ),
           const SizedBox(height: 16),
           const Text(
             'Smart Measurement AI',
             style: TextStyle(
               color: Colors.white,
-              fontSize: 22,
-              fontWeight: FontWeight.w900,
+              fontSize: 20,
+              fontWeight: FontWeight.w800,
               letterSpacing: 1,
             ),
           ),
           const SizedBox(height: 8),
           const Text(
-            'Enter your height for dynamic pixel-to-metric calibration',
+            'Enter your height for scale calibration',
             textAlign: TextAlign.center,
-            style: TextStyle(color: Colors.white54, fontSize: 13),
+            style: TextStyle(color: Colors.white54, fontSize: 12),
           ),
           const SizedBox(height: 24),
           SizedBox(
-            width: 220,
+            width: 200,
             child: TextField(
               controller: _heightController,
               keyboardType: TextInputType.number,
               style: const TextStyle(
                 color: Colors.white,
-                fontSize: 18,
+                fontSize: 16,
                 fontWeight: FontWeight.bold,
               ),
               textAlign: TextAlign.center,
               decoration: InputDecoration(
                 suffixText: 'INCHES',
                 suffixStyle: const TextStyle(
-                    color: Colors.cyanAccent,
-                    fontSize: 12,
+                    color: Colors.white54,
+                    fontSize: 10,
                     fontWeight: FontWeight.bold),
                 filled: true,
-                fillColor: Colors.black45,
+                fillColor: const Color(0xFF1E1E1E),
                 enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(16),
+                  borderRadius: BorderRadius.circular(14),
                   borderSide: const BorderSide(color: Colors.white12),
                 ),
                 focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(16),
-                  borderSide: const BorderSide(color: Colors.cyanAccent),
+                  borderRadius: BorderRadius.circular(14),
+                  borderSide: const BorderSide(color: Colors.white),
                 ),
               ),
             ),
@@ -848,19 +789,20 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
           const SizedBox(height: 24),
           SizedBox(
             width: double.infinity,
-            height: 54,
+            height: 50,
             child: ElevatedButton(
               style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.cyanAccent,
+                backgroundColor: Colors.white,
                 foregroundColor: Colors.black,
+                elevation: 0,
                 shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(16)),
+                    borderRadius: BorderRadius.circular(14)),
               ),
               onPressed: _startCameraStream,
               child: const Text(
-                'INITIALIZE CAMERA STREAM',
+                'INITIALIZE CAMERA',
                 style: TextStyle(
-                    fontSize: 15, fontWeight: FontWeight.w900, letterSpacing: 1),
+                    fontSize: 14, fontWeight: FontWeight.w900, letterSpacing: 1),
               ),
             ),
           ),
@@ -870,13 +812,13 @@ class _CameraViewfinderBodyState extends State<CameraViewfinderBody>
   }
 }
 
-class FuturisticPoseHUDPainter extends CustomPainter {
+class MonochromePoseHUDPainter extends CustomPainter {
   final List<dynamic>? landmarks;
   final bool isAligned;
   final double scanProgress;
   final bool isMeasuring;
 
-  FuturisticPoseHUDPainter({
+  MonochromePoseHUDPainter({
     required this.landmarks,
     required this.isAligned,
     required this.scanProgress,
@@ -891,13 +833,12 @@ class FuturisticPoseHUDPainter extends CustomPainter {
     final targetRect =
         Rect.fromCenter(center: center, width: boxWidth, height: boxHeight);
 
-    final hudColor = isAligned ? Colors.greenAccent : Colors.cyanAccent;
     final hudPaint = Paint()
-      ..color = hudColor.withOpacity(0.8)
+      ..color = Colors.white70
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 3.0;
+      ..strokeWidth = 2.0;
 
-    const cornerLength = 30.0;
+    const cornerLength = 25.0;
     canvas.drawLine(targetRect.topLeft,
         targetRect.topLeft + const Offset(cornerLength, 0), hudPaint);
     canvas.drawLine(targetRect.topLeft,
@@ -920,9 +861,8 @@ class FuturisticPoseHUDPainter extends CustomPainter {
 
     final scanY = targetRect.top + (targetRect.height * scanProgress);
     final scanLaserPaint = Paint()
-      ..color = (isMeasuring ? Colors.greenAccent : Colors.cyanAccent)
-          .withOpacity(0.7)
-      ..strokeWidth = isMeasuring ? 4.0 : 2.0;
+      ..color = Colors.white
+      ..strokeWidth = isMeasuring ? 3.0 : 1.5;
 
     canvas.drawLine(
       Offset(targetRect.left, scanY),
@@ -932,13 +872,11 @@ class FuturisticPoseHUDPainter extends CustomPainter {
 
     if (landmarks != null) {
       final linePaint = Paint()
-        ..color = isAligned
-            ? Colors.greenAccent.withOpacity(0.6)
-            : Colors.cyanAccent.withOpacity(0.4)
-        ..strokeWidth = 2.0;
+        ..color = Colors.white54
+        ..strokeWidth = 1.5;
 
       final nodePaint = Paint()
-        ..color = isAligned ? Colors.greenAccent : Colors.cyanAccent
+        ..color = Colors.white
         ..style = PaintingStyle.fill;
 
       final connections = [
@@ -966,7 +904,7 @@ class FuturisticPoseHUDPainter extends CustomPainter {
 
       for (var lm in landmarks!) {
         final pos = _getOffset(lm, size);
-        canvas.drawCircle(pos, 4.0, nodePaint);
+        canvas.drawCircle(pos, 3.5, nodePaint);
       }
     }
   }
@@ -979,7 +917,7 @@ class FuturisticPoseHUDPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant FuturisticPoseHUDPainter oldDelegate) {
+  bool shouldRepaint(covariant MonochromePoseHUDPainter oldDelegate) {
     return oldDelegate.landmarks != landmarks ||
         oldDelegate.isAligned != isAligned ||
         oldDelegate.isMeasuring != isMeasuring ||
